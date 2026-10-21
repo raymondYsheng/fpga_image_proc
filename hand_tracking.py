@@ -2,6 +2,8 @@ from pathlib import Path
 import time
 
 import cv2
+import csv
+from datetime import datetime
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -17,6 +19,27 @@ options = vision.HandLandmarkerOptions(
 camera = cv2.VideoCapture(0)
 if not camera.isOpened():
     raise RuntimeError("Could not open webcam.")
+
+session = datetime.now().strftime("%Y%m%d_%H%M%S")
+data_path = Path(__file__).with_name(f"gestures_{session}.csv")
+
+data_file = data_path.open("w", newline="")
+writer = csv.writer(data_file)
+writer.writerow(
+    ["label"]
+    + [f"{axis}{i}" for i in range(21) for axis in ("x", "y", "z")]
+)
+
+labels = {
+    ord("1"): "open_hand",
+    ord("2"): "fist",
+    ord("3"): "pointing",
+    ord("4"): "other",
+}
+
+active_label = None
+last_saved = 0
+counts = {label: 0 for label in labels.values()}
 
 last_timestamp = -1
 
@@ -63,9 +86,46 @@ try:
                 0.8, (0, 255, 255), 2,
             )
 
+                        # Save at most five samples per second.
+            if (
+                active_label is not None
+                and result.hand_landmarks
+                and timestamp - last_saved >= 200
+            ):
+                hand = result.hand_landmarks[0]
+                coordinates = [
+                    value
+                    for point in hand
+                    for value in (point.x, point.y, point.z)
+                ]
+                writer.writerow([active_label] + coordinates)
+                data_file.flush()
+                counts[active_label] += 1
+                last_saved = timestamp
+
+            recording_text = (
+                f"Recording: {active_label} ({counts[active_label]})"
+                if active_label
+                else "Paused"
+            )
+            cv2.putText(
+                frame, recording_text, (20, 70),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6, (0, 255, 255), 2,
+            )
+
             cv2.imshow("Hand tracking - Q to quit", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord("q"):
                 break
+            elif key == ord(" "):
+                active_label = None
+            elif key in labels:
+                active_label = labels[key]
 finally:
     camera.release()
     cv2.destroyAllWindows()
+    data_file.close()
+    print(f"Saved data to: {data_path}")
+    print(f"Samples per gesture: {counts}")
